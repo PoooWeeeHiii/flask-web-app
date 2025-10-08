@@ -1,8 +1,9 @@
-
 name: Deploy Flask App to Touge Server
+
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
   deploy:
@@ -10,41 +11,53 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
           cache-dependency-path: requirements.txt
 
-      - name: Install & Test
+      - name: Install dependencies and run tests
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pytest -v
+          pip install pytest==8.4.1
+          echo "✅ Dependencies installed, running tests..."
+          pytest tests/ -v
+        continue-on-error: false
 
-      - name: Deploy to Touge via SSH (EDIT PORT/IP)
+      - name: Deploy to Touge Server via SSH (Port 50241)
         run: |
+          echo "⚙️ 开始配置 SSH 环境..."
           mkdir -p ~/.ssh
           printf "%s\n" "${{ secrets.TOUGE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -p 50241 -H ${{ secrets.TOUGE_SERVER_IP }} >> ~/.ssh/known_hosts
+          ssh-keyscan -p 50241 -H 47.96.157.89 >> ~/.ssh/known_hosts
+          echo "✅ SSH配置完成，开始部署..."
 
-          ssh -v -p 50241 -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa root@${{ secrets.TOUGE_SERVER_IP }} << 'EOF'
+          ssh -v -p 50241 -o StrictHostKeyChecking=no -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa root@47.96.157.89 << 'EOF'
             set -e
-            echo "Connected: $(whoami)@$(hostname)"
-            cd /root/flask-web-app || { echo "project dir missing"; exit 1; }
-            git pull origin main || { echo "git pull failed"; exit 1; }
+            echo "🖥️ 成功连接到服务器：$(hostname)"
+            cd /root/flask-web-app || { echo "❌ 项目目录不存在"; exit 1; }
+
+            echo "📦 拉取最新代码..."
+            git pull origin main || { echo "❌ Git拉取失败"; exit 1; }
+
+            echo "📚 安装依赖..."
             pip3 install --upgrade pip
-            pip3 install -r requirements.txt || { echo "pip install failed"; exit 1; }
+            pip3 install -r requirements.txt || { echo "❌ 依赖安装失败"; exit 1; }
+
+            echo "🔁 重启 Flask 应用..."
             supervisorctl reread
             supervisorctl update
-            supervisorctl restart flask-web-app || { echo "restart failed"; exit 1; }
+            supervisorctl restart flask-web-app || { echo "❌ 应用重启失败"; exit 1; }
+
+            echo "✅ 部署成功！"
             supervisorctl status flask-web-app
-            echo "Deploy done"
           EOF
