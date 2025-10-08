@@ -1,57 +1,47 @@
+name: CI & Deploy
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install deps & run tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+          pytest -v
+
       - name: Deploy to Touge Server via SSH (Port 51959)
         env:
-          IP: ${{ secrets.TOUGE_SERVER_IP }}   # 例如 47.96.157.89
+          IP: ${{ secrets.TOUGE_SERVER_IP }}
           PORT: 51959
         run: |
           set -euxo pipefail
 
-          # 1) 配置 SSH
+          # 1) 准备 SSH
           mkdir -p ~/.ssh
           printf "%s\n" "${{ secrets.TOUGE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -p "$PORT" -H "$IP" >> ~/.ssh/known_hosts || true
 
-          # 2) 远程执行部署
-          ssh -p "$PORT" -o StrictHostKeyChecking=no root@"$IP" bash -s <<'REMOTE'
-            set -e
-            export DEBIAN_FRONTEND=noninteractive
+          # 2) 上传部署脚本（保留为独立文件）
+          scp -P "$PORT" -o StrictHostKeyChecking=no deploy/scripts/deploy.sh root@"$IP":/tmp/deploy.sh
+          ssh -p "$PORT" -o StrictHostKeyChecking=no root@"$IP" "chmod +x /tmp/deploy.sh"
 
-            APP_DIR=/root/flask-web-app
-            REPO_URL="https://github.com/${GITHUB_REPOSITORY}.git"
-
-            apt-get update -y
-            apt-get install -y git python3-pip supervisor
-
-            if [ ! -d "$APP_DIR/.git" ]; then
-              rm -rf "$APP_DIR"
-              git clone "$REPO_URL" "$APP_DIR"
-            else
-              cd "$APP_DIR"
-              git remote set-url origin "$REPO_URL" || true
-              git fetch origin
-              git reset --hard origin/main
-            fi
-
-            cd "$APP_DIR"
-            pip3 install --upgrade pip
-            pip3 install -r requirements.txt
-
-            # 写入 supervisor 配置（注意：这一段和 END 标记都属于同一个 heredoc）
-            cat >/etc/supervisor/conf.d/flask-web-app.conf <<'CONF'
-[program:flask-web-app]
-command=/usr/bin/python3 /root/flask-web-app/src/app.py
-directory=/root/flask-web-app
-user=root
-autostart=true
-autorestart=true
-redirect_stderr=true
-stdout_logfile=/root/flask-web-app/app.log
-CONF
-
-            supervisorctl reread || true
-            supervisorctl update || true
-            supervisorctl restart flask-web-app || supervisorctl start flask-web-app
-
-            supervisorctl status flask-web-app || true
-            tail -n 20 /root/flask-web-app/app.log || true
-REMOTE
+          # 3) 远程执行：脚本内部会安装/更新 supervisor + 拉起服务
+          REPO_URL="https://github.com/${GITHUB_REPOSITORY}.git"
+          ssh -p "$PORT" -o StrictHostKeyChecking=no root@"$IP" "/tmp/deploy.sh \"$REPO_URL\""
