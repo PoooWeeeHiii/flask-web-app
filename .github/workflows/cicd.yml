@@ -1,3 +1,32 @@
+name: Deploy Flask App to Touge Server
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies and run tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest==8.4.1
+          pytest -q
+
       - name: Deploy to Touge Server via SSH (Port 51959)
         env:
           IP: ${{ secrets.TOUGE_SERVER_IP }}   # 例如 47.96.157.89
@@ -11,7 +40,7 @@
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -p "$PORT" -H "$IP" >> ~/.ssh/known_hosts || true
 
-          # 2) 远程执行部署（整个脚本作为 stdin 传给远端 bash）
+          # 2) 远程执行部署
           ssh -p "$PORT" -o StrictHostKeyChecking=no root@"$IP" bash -s <<'REMOTE'
             set -e
             export DEBIAN_FRONTEND=noninteractive
@@ -19,11 +48,9 @@
             APP_DIR=/root/flask-web-app
             REPO_URL="https://github.com/${GITHUB_REPOSITORY}.git"
 
-            # 基础环境
             apt-get update -y
             apt-get install -y git python3-pip supervisor
 
-            # 拉仓库（首发克隆，之后拉取并 reset）
             if [ ! -d "$APP_DIR/.git" ]; then
               rm -rf "$APP_DIR"
               git clone "$REPO_URL" "$APP_DIR"
@@ -34,12 +61,11 @@
               git reset --hard origin/main
             fi
 
-            # 依赖
             cd "$APP_DIR"
             pip3 install --upgrade pip
             pip3 install -r requirements.txt
 
-            # 写 supervisor 配置（使用带引号的 heredoc，避免变量展开）
+            # 写入 supervisor 配置
             cat >/etc/supervisor/conf.d/flask-web-app.conf <<'CONF'
 [program:flask-web-app]
 command=/usr/bin/python3 /root/flask-web-app/src/app.py
@@ -51,7 +77,6 @@ redirect_stderr=true
 stdout_logfile=/root/flask-web-app/app.log
 CONF
 
-            # 重新加载并启动
             supervisorctl reread || true
             supervisorctl update || true
             supervisorctl restart flask-web-app || supervisorctl start flask-web-app
